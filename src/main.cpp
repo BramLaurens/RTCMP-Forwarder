@@ -12,8 +12,8 @@ const char* NTRIP_PASS = "";
 
 // LC29H UART (ESP32 UART2)
 HardwareSerial GNSS(2);
-#define GNSS_RX 16   // GNSS TX → ESP32 RX
-#define GNSS_TX 17   // GNSS RX → ESP32 TX
+#define GNSS_RX 16   // GNSS TX -> ESP32 RX
+#define GNSS_TX 17   // GNSS RX <- ESP32 TX
 #define GNSS_BAUD 115200
 
 WiFiClient ntripClient;
@@ -21,9 +21,15 @@ WiFiClient ntripClient;
 String lastGGA = "";
 unsigned long lastGGASend = 0;
 
-// -------------------------------------------------------------------
-// WiFi Connection
-// -------------------------------------------------------------------
+// Optional: enable to increase UART buffers (uncomment to use)
+//#define ENABLE_UART_TUNING
+#ifdef ENABLE_UART_TUNING
+  #include "driver/uart.h"
+  #define UART_RX_BUFFER_SIZE 2048
+  #define UART_TX_BUFFER_SIZE 2048
+#endif
+
+// ---------------- WiFi ----------------
 void connectWiFi() {
   Serial.printf("[WiFi] Connecting to %s", WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -34,9 +40,7 @@ void connectWiFi() {
   Serial.printf("\n[WiFi] Connected. IP: %s\n", WiFi.localIP().toString().c_str());
 }
 
-// -------------------------------------------------------------------
-// Base64 Encoder (for Authorization)
-// -------------------------------------------------------------------
+// ---------------- base64 ----------------
 String base64Encode(const String& input) {
   const char* table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   String output = "";
@@ -55,9 +59,7 @@ String base64Encode(const String& input) {
   return output;
 }
 
-// -------------------------------------------------------------------
-// Connect to NTRIP Caster
-// -------------------------------------------------------------------
+// ---------------- NTRIP connect ----------------
 bool connectNTRIP() {
   Serial.printf("[NTRIP] Connecting to %s:%d ...\n", NTRIP_HOST, NTRIP_PORT);
   if (!ntripClient.connect(NTRIP_HOST, NTRIP_PORT)) {
@@ -94,41 +96,29 @@ bool connectNTRIP() {
   return false;
 }
 
-// -------------------------------------------------------------------
-// Read GGA from GNSS and store latest one
-// -------------------------------------------------------------------
-void checkForGGA() {
-  static String buffer;
-  while (GNSS.available()) {
-    char c = GNSS.read();
-    buffer += c;
-
-    if (c == '\n') {
-      if (buffer.startsWith("$GPGGA") || buffer.startsWith("$GNGGA") ||
-          buffer.startsWith("$GLGGA") || buffer.startsWith("$GBGGA")) {
-        lastGGA = buffer;
-      }
-      buffer = "";
-    }
-  }
-}
-
-// -------------------------------------------------------------------
-// Periodically send the latest GGA to NTRIP server
-// -------------------------------------------------------------------
+// ---------------- Send GGA once per second ----------------
 void sendGGAIfDue() {
-  if (millis() - lastGGASend >= 1000 && lastGGA.length() > 0) {
+  if (millis() - lastGGASend >= 1000 && lastGGA.length() > 0 && ntripClient.connected()) {
     ntripClient.print(lastGGA);
     lastGGASend = millis();
   }
 }
 
-// -------------------------------------------------------------------
-// Setup
-// -------------------------------------------------------------------
+// ---------------- Setup ----------------
 void setup() {
   Serial.begin(115200);
+
+  // start GNSS UART
   GNSS.begin(GNSS_BAUD, SERIAL_8N1, GNSS_RX, GNSS_TX);
+
+  // optional: increase UART driver buffers (uncomment ENABLE_UART_TUNING)
+  #ifdef ENABLE_UART_TUNING
+    // re-install uart driver for GNSS port with larger buffers
+    uart_driver_delete(GNSS.port());
+    uart_driver_install(GNSS.port(), UART_RX_BUFFER_SIZE, UART_TX_BUFFER_SIZE, 0, NULL, 0);
+    Serial.println("[UART] increased RX/TX buffer sizes.");
+  #endif
+
   connectWiFi();
   while (!connectNTRIP()) {
     delay(3000);
@@ -136,29 +126,55 @@ void setup() {
   Serial.println("[READY] NTRIP bridge active.");
 }
 
-// -------------------------------------------------------------------
-// Main Loop
-// -------------------------------------------------------------------
+// ---------------- Helper: process GNSS bytes (single-read) ----------------
+// This function reads up to 'maxBytes' bytes from GNSS into 'bufLen' and
+// writes the same bytes to Serial (USB). It also extracts complete NMEA
+// lines and stores latest GGA sentence in lastGGA.
+void processGNSSOnce(size_t maxBytes) {
+  static String lineBuffer; // accumulates characters until newline
+  uint8_t tmpBuf[512];
+  size_t toRead = 0;
+  if (GNSS.available()) {
+    toRead = GNSS.readBytes(tmpBuf, min((size_t)maxBytes, sizeof(tmpBuf)));
+  }
+
+  if (toRead == 0) return;
+
+  // forward same bytes to USB serial (so nothing is lost)
+  Serial.write(tmpBuf, toRead);
+
+  // parse bytes for complete NMEA lines and update lastGGA
+  for (size_t i = 0; i < toRead; ++i) {
+    char c = (char)tmpBuf[i];
+    lineBuffer += c;
+    if (c == '\n') {
+      // got a full line
+      if (lineBuffer.startsWith("$GPGGA") || lineBuffer.startsWith("$GNGGA") ||
+          lineBuffer.startsWith("$GLGGA") || lineBuffer.startsWith("$GBGGA")) {
+        lastGGA = lineBuffer; // keep entire NMEA line (with \r\n)
+      }
+      lineBuffer = "";
+    }
+    // guard against runaway buffer (in case of no newline for long time)
+    if (lineBuffer.length() > 200) {
+      lineBuffer = lineBuffer.substring(lineBuffer.length() - 100);
+    }
+  }
+}
+
+// ---------------- Main loop ----------------
 void loop() {
-  // 1. Read from NTRIP and forward to GNSS
-  int count = 0;
-  while (ntripClient.available() && count < 256) {
+  // 1) Forward NTRIP -> GNSS in 256-byte chunks
+  int i = 0;
+  while (ntripClient.available() && i < 256) {
     uint8_t b = ntripClient.read();
     GNSS.write(b);
-    count++;
+    i++;
   }
 
-  // 2. Read GNSS data (for GGA detection and optional debug)
-  // checkForGGA();
+  // 2) Read GNSS *once* and both: (a) forward to USB, (b) extract GGA
+  processGNSSOnce(256);
 
-  // 3. Optional: forward GNSS → USB for monitoring (trimmed for performance)
-  count = 0;
-  while (GNSS.available() && count < 256) {
-    uint8_t b = GNSS.read();
-    Serial.write(b);
-    count++;
-  }
-
-  // 4. Send latest GGA to NTRIP server every 1s
-  // sendGGAIfDue();
+  // 3) Send latest GGA to caster every 1s
+  sendGGAIfDue();
 }
