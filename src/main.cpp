@@ -7,6 +7,9 @@ const char* WIFI_PASSWORD = "Tuindorprulez2023!";
 const char* NTRIP_HOST = "ntrip.kadaster.nl";
 const int   NTRIP_PORT = 2101;
 const char* NTRIP_MOUNTPOINT = "CBW100NLD0";
+/*Known good mountpoints:
+ * - CBW100NLD0
+ */
 const char* NTRIP_USER = "";
 const char* NTRIP_PASS = "";
 
