@@ -1,17 +1,17 @@
 #include <WiFi.h>
 #include <WiFiClient.h>
 
-const char* WIFI_SSID     = "Luluenco";
-const char* WIFI_PASSWORD = "Tuindorprulez2023!";
+const char* WIFI_SSID     = "iphonebram";
+const char* WIFI_PASSWORD = "Sand3452";
 
-const char* NTRIP_HOST = "ntrip.kadaster.nl";
+const char* NTRIP_HOST = "gnss1.tudelft.nl";
 const int   NTRIP_PORT = 2101;
-const char* NTRIP_MOUNTPOINT = "CBW100NLD0";
+const char* NTRIP_MOUNTPOINT = "APEL00NLD0";
 /*Known good mountpoints:
- * - CBW100NLD0
+ * - ntrip.kadaster.nl:2101 CBW100NLD0
  */
-const char* NTRIP_USER = "";
-const char* NTRIP_PASS = "";
+const char* NTRIP_USER = "c";
+const char* NTRIP_PASS = "c";
 
 // LC29H UART (ESP32 UART2)
 HardwareSerial GNSS(2);
@@ -22,7 +22,18 @@ HardwareSerial GNSS(2);
 WiFiClient ntripClient;
 
 String lastGGA = "";
-unsigned long lastGGASend = 0;
+
+// Timing control
+unsigned long lastGGASent = 0;
+const unsigned long GGA_INTERVAL_MS = 5000; // every 5s
+
+// ---- Connection monitor ----
+unsigned long lastDataReceived = 0;
+const unsigned long CONNECTION_TIMEOUT_MS = 10000; // 15 s
+unsigned long lastReconnectAttempt = 0;
+const unsigned long RECONNECT_INTERVAL_MS = 10000;
+unsigned long lastStatPrint = 0;
+unsigned long connectTimeMs = 0;
 
 // Optional: enable to increase UART buffers (uncomment to use)
 //#define ENABLE_UART_TUNING
@@ -63,6 +74,7 @@ String base64Encode(const String& input) {
 }
 
 // ---------------- NTRIP connect ----------------
+
 bool connectNTRIP() {
   Serial.printf("[NTRIP] Connecting to %s:%d ...\n", NTRIP_HOST, NTRIP_PORT);
   if (!ntripClient.connect(NTRIP_HOST, NTRIP_PORT)) {
@@ -90,6 +102,7 @@ bool connectNTRIP() {
       String line = ntripClient.readStringUntil('\n');
       if (line.startsWith("ICY 200 OK")) {
         Serial.println("[NTRIP] Connected successfully.");
+        connectTimeMs = millis();   // <-- set connection timestamp here
         return true;
       }
     }
@@ -101,10 +114,24 @@ bool connectNTRIP() {
 
 // ---------------- Send GGA once per second ----------------
 void sendGGAIfDue() {
-  if (millis() - lastGGASend >= 1000 && lastGGA.length() > 0 && ntripClient.connected()) {
-    ntripClient.print(lastGGA);
-    lastGGASend = millis();
+  if (!ntripClient.connected() || lastGGA.length() < 10) return;
+  unsigned long now = millis();
+  if (now - lastGGASent < GGA_INTERVAL_MS) return;
+
+  // Ensure proper CRLF and separate TCP packet
+  String ggaLine = lastGGA;
+  if (!ggaLine.endsWith("\r\n")) {
+    ggaLine.trim();
+    ggaLine += "\r\n";
   }
+
+  // Wait until no RTCM pending before sending GGA
+  delay(50);  // small pause so we don't interleave with RTCM burst
+  ntripClient.write((const uint8_t*)ggaLine.c_str(), ggaLine.length());
+  ntripClient.flush();  // ensure it's sent immediately
+
+  lastGGASent = now;
+  Serial.print("[GGA->NTRIP Caster] "); Serial.print(ggaLine);
 }
 
 // ---------------- Setup ----------------
@@ -165,6 +192,26 @@ void processGNSSOnce(size_t maxBytes) {
   }
 }
 
+// ---- Reconnect logic ----
+void checkNTRIPConnection() {
+  // if socket lost or no data for a while, reconnect
+  if (!ntripClient.connected() || (millis() - lastDataReceived > CONNECTION_TIMEOUT_MS)) {
+    if (millis() - lastReconnectAttempt > RECONNECT_INTERVAL_MS) {
+      Serial.println("[NTRIP] Connection lost. Reconnecting...");
+      ntripClient.stop();
+      connectNTRIP();
+      lastReconnectAttempt = millis();
+    }
+  }
+}
+
+void ntripStatprint(){
+  if (millis() - lastStatPrint > 30000) {
+    Serial.printf("[Stats] Connected=%d  Uptime=%lu s\n", ntripClient.connected(), (millis() - connectTimeMs)/1000);
+    lastStatPrint = millis();
+  }
+}
+
 // ---------------- Main loop ----------------
 void loop() {
   // 1) Forward NTRIP -> GNSS in 256-byte chunks
@@ -172,6 +219,7 @@ void loop() {
   while (ntripClient.available() && i < 256) {
     uint8_t b = ntripClient.read();
     GNSS.write(b);
+    lastDataReceived = millis();
     i++;
   }
 
@@ -179,5 +227,8 @@ void loop() {
   processGNSSOnce(256);
 
   // 3) Send latest GGA to caster every 1s
-  sendGGAIfDue();
+  // sendGGAIfDue();
+
+  ntripStatprint();
+  checkNTRIPConnection(); 
 }
