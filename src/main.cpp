@@ -9,9 +9,10 @@ const int   NTRIP_PORT = 2101;
 const char* NTRIP_MOUNTPOINT = "APEL00NLD0";
 /*Known good mountpoints:
  * - ntrip.kadaster.nl:2101 CBW100NLD0
+ * - gnss1.tudelft.nl:2101 APEL00NLD0
  */
-const char* NTRIP_USER = "c";
-const char* NTRIP_PASS = "c";
+const char* NTRIP_USER = "";
+const char* NTRIP_PASS = "";
 
 // LC29H UART (ESP32 UART2)
 HardwareSerial GNSS(2);
