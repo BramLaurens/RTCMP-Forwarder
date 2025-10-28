@@ -1,26 +1,25 @@
 #include <WiFi.h>
-#include <WiFiClient.h>
+#include <WiFiClientSecure.h>
+
+WiFiClientSecure ntripClient;
 
 const char* WIFI_SSID     = "iphonebram";
 const char* WIFI_PASSWORD = "Sand3452";
 
-const char* NTRIP_HOST = "gnss1.tudelft.nl";
-const int   NTRIP_PORT = 2101;
-const char* NTRIP_MOUNTPOINT = "APEL00NLD0";
+const char* NTRIP_HOST = "ntrip.kadaster.nl";
+const int   NTRIP_PORT = 443;
+const char* NTRIP_MOUNTPOINT = "UTR200NLD0";
 /*Known good mountpoints:
- * - ntrip.kadaster.nl:2101 CBW100NLD0
  * - gnss1.tudelft.nl:2101 APEL00NLD0
  */
-const char* NTRIP_USER = "";
-const char* NTRIP_PASS = "";
+const char* NTRIP_USER = "LaurensB";
+const char* NTRIP_PASS = "ebaaZ1MeiThu";
 
 // LC29H UART (ESP32 UART2)
 HardwareSerial GNSS(2);
 #define GNSS_RX 16   // GNSS TX -> ESP32 RX
 #define GNSS_TX 17   // GNSS RX <- ESP32 TX
 #define GNSS_BAUD 115200
-
-WiFiClient ntripClient;
 
 String lastGGA = "";
 
@@ -79,7 +78,7 @@ String base64Encode(const String& input) {
 bool connectNTRIP() {
   Serial.printf("[NTRIP] Connecting to %s:%d ...\n", NTRIP_HOST, NTRIP_PORT);
   if (!ntripClient.connect(NTRIP_HOST, NTRIP_PORT)) {
-    Serial.println("[NTRIP] Connection failed.");
+    Serial.println("[NTRIP] TLS connection failed.");
     return false;
   }
 
@@ -89,8 +88,10 @@ bool connectNTRIP() {
     authHeader = "Authorization: Basic " + base64Encode(credentials) + "\r\n";
   }
 
+  // include Host header (important when using HTTPS / virtual hosts)
   String request =
       String("GET /") + NTRIP_MOUNTPOINT + " HTTP/1.0\r\n" +
+      "Host: " + NTRIP_HOST + "\r\n" +
       "User-Agent: NTRIP ESP32Client\r\n" +
       "Accept: */*\r\n" +
       authHeader + "\r\n";
@@ -101,15 +102,18 @@ bool connectNTRIP() {
   while (millis() - start < 5000) {
     if (ntripClient.available()) {
       String line = ntripClient.readStringUntil('\n');
-      if (line.startsWith("ICY 200 OK")) {
-        Serial.println("[NTRIP] Connected successfully.");
-        connectTimeMs = millis();   // <-- set connection timestamp here
+      line.trim();
+      Serial.println(line);
+      if (line.startsWith("ICY 200") || line.startsWith("HTTP/1.1 200")) {
+        Serial.println("[NTRIP] Connected successfully (HTTPS).");
+        connectTimeMs = millis();
         return true;
       }
+      // if server returned 401, you'll see it here (authorization problem)
     }
   }
 
-  Serial.println("[NTRIP] No valid response from server.");
+  Serial.println("[NTRIP] No valid response from server over HTTPS.");
   return false;
 }
 
@@ -151,6 +155,7 @@ void setup() {
   #endif
 
   connectWiFi();
+  ntripClient.setInsecure(); // disable certificate verification
   while (!connectNTRIP()) {
     delay(3000);
   }
