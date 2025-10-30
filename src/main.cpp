@@ -3,8 +3,8 @@
 
 WiFiClientSecure ntripClient;
 
-const char* WIFI_SSID     = "iphonebram";
-const char* WIFI_PASSWORD = "Sand3452";
+const char* WIFI_SSID     = "gpslayrover9000";
+const char* WIFI_PASSWORD = "sand3452";
 
 const char* NTRIP_HOST = "ntrip.kadaster.nl";
 const int   NTRIP_PORT = 443;
