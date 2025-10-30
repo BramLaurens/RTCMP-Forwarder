@@ -1,8 +1,8 @@
 #include <WiFi.h>
 #include <WiFiClient.h>
 
-const char* WIFI_SSID     = "iphonebram";
-const char* WIFI_PASSWORD = "Sand3452";
+const char* WIFI_SSID     = "gpslayrover9000";
+const char* WIFI_PASSWORD = "sand3452";
 
 const char* NTRIP_HOST = "gnss1.tudelft.nl";
 const int   NTRIP_PORT = 2101;
